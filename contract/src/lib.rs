@@ -89,7 +89,9 @@ impl Pools {
             cur_pools.push(&pool);
         }
     }
+    #[payable]
     pub fn enter_a_pool(&mut self, owner:AccountId, pool_id: String, prediction: String, amount: Balance){
+        assert!(env::attached_deposit() == amount, "No enough attached ");
         let start = SystemTime::now();
         let since_the_epoch = start
             .duration_since(UNIX_EPOCH)
@@ -119,12 +121,53 @@ impl Pools {
             }
             i = i + 1;
         }
-        
     }
+
+    pub fn add_result(&mut self, pool_id: String, result: String){
+        let owner = env::signer_account_id();
+        assert!(self.pools_list.get(&owner).is_some(), "You don't own any pools");
+        let the_pools = self.pools_list.get(&owner).unwrap();
+        let mut i = 0;
+        let r = result;
+        for mut p in the_pools.iter() {
+            if p.pool_id == pool_id{
+                let start = SystemTime::now();
+                let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
+                let in_ms = since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000;
+                assert!(p.close_date_time < in_ms, "Pool not closed so not ready for result");
+                p.result = Some(r.clone());
+                self.pools_list.get(&owner).unwrap().replace(i, &p);
+            }
+            i = i + 1;
+        }
+
+    }
+    pub fn pay_out_winners(self, pool_id:String){
+        let owner = env::signer_account_id();
+        assert!(self.pools_list.get(&owner).is_some(), "You don't own any pools");
+        let the_pools = self.pools_list.get(&owner).unwrap();
+        let mut i = 0; 
+        for p in the_pools.iter(){
+            //find the pool 
+            if p.pool_id == pool_id {
+                let winners:Vec<AccountId>;
+                //loop through entires to find matches 
+                assert!(p.result.is_some(), "NO result yet");
+                let r = p.result.unwrap();
+                for w in p.entries.iter(){
+                    if w.prediction == r.clone(){
+                        
+                    }
+                }
+            }
+            i = i + 1
+        }
+    }
+
+}
     // `match` is similar to `switch` in other languages; here we use it to default to "Hello" if
     // self.records.get(&account_id) is not yet defined.
     // Learn more: https://doc.rust-lang.org/book/ch06-02-match.html#matching-with-optiont
-}
 
 /*
  * The rest of this file holds the inline tests for the code above
