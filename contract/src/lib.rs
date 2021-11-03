@@ -3,6 +3,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::{env, near_bindgen, setup_alloc, Timestamp, AccountId, Balance};
 use near_sdk::collections::{UnorderedMap, Vector};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 setup_alloc!();
 
@@ -17,15 +18,17 @@ pub struct Entry {
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct Pool {
+    pool_id: String,
     pool_owner: AccountId,
     question: String,
     description: String,
-    win_options: Vector<String>,
-    close_date_time:Timestamp,
+    win_options: Vec<String>,
+    close_date_time:Timestamp, //milliseconds
     result_verify_url: String,
     result: Option<String>,
     entries: Vector<Entry>,
-    pool_fee: u8 // how much the pool owner wants to charge as a percentage. 
+    pool_fee: u8, // how much the pool owner wants to charge as a percentage. 
+    prize_pool: u128
 }
 
 #[near_bindgen]
@@ -53,9 +56,11 @@ impl Pools {
             pools_list: UnorderedMap::new(b'e')
         }
     }
-    pub fn make_new_pool(&mut self, question: String, desc: String, winn_ops: Vector<String>, close: Timestamp, fee: u8, verify: String){
-        let win_ops: Vector<String> = winn_ops;
+  
+    pub fn make_new_pool(&mut self, question: String, desc: String, win_ops: Vec<String>, close: Timestamp, fee: u8, verify: String){
+        let id: String = self.pools_list.len().to_string();
         let pool = Pool {
+            pool_id: id,
             pool_owner: env::signer_account_id(),
             question: question,
             description: desc,
@@ -64,16 +69,17 @@ impl Pools {
             entries: Vector::new(b'd'),
             pool_fee: fee,
             result_verify_url: verify,
-            result: None
+            result: None,
+            prize_pool: 0
         };
         if self.pools_list.len() == 0 {
             //list is empty
-            let pool_list = Vector::new(b'f');
+            let mut pool_list = Vector::new(b'f');
             pool_list.push(&pool);
             self.pools_list.insert(&env::signer_account_id(),&pool_list);
         }else if self.pools_list.get(&env::signer_account_id()).is_none(){
             // list not emplty but first pool for this user. 
-            let pool_list = Vector::new(b'f');
+            let mut pool_list = Vector::new(b'f');
             pool_list.push(&pool);
             self.pools_list.insert(&env::signer_account_id(),&pool_list);
         }else {
@@ -82,9 +88,39 @@ impl Pools {
             let mut cur_pools: Vector<Pool> = self.pools_list.get(&env::signer_account_id()).unwrap();
             cur_pools.push(&pool);
         }
-
     }
-
+    pub fn enter_a_pool(&mut self, owner:AccountId, pool_id: String, prediction: String, amount: Balance){
+        let start = SystemTime::now();
+        let since_the_epoch = start
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        let in_ms = since_the_epoch.as_secs() * 1000 +
+            since_the_epoch.subsec_nanos() as u64 / 1_000_000;
+        assert!(self.pools_list.get(&owner).is_some(), "No pools for ths owenr bad show");
+        let the_pools = self.pools_list.get(&owner).unwrap();
+        //create the entry 
+        let entry = Entry{
+            bet_owner: env::signer_account_id(),
+            prediction: prediction, // make sure this is one of the possible options 
+            stake: amount,
+        };
+        //find the correct pool to enter 
+        let mut i = 0; 
+        for mut p in the_pools.iter() {
+            if p.pool_id == pool_id{
+                //check pool time is not closed 
+                assert!(p.close_date_time > in_ms, "Pool closed mate");
+                // add the entry to the pool 
+                p.entries.push(&entry);
+                p.prize_pool = p.prize_pool + amount;
+                // return updated pool to the list of pools. 
+                self.pools_list.get(&owner).unwrap().replace(i, &p);
+                
+            }
+            i = i + 1;
+        }
+        
+    }
     // `match` is similar to `switch` in other languages; here we use it to default to "Hello" if
     // self.records.get(&account_id) is not yet defined.
     // Learn more: https://doc.rust-lang.org/book/ch06-02-match.html#matching-with-optiont
@@ -131,10 +167,18 @@ mod tests {
 
     #[test]
     fn make_new_pool(){
+        let start = SystemTime::now();
+        let since_the_epoch = start
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        let in_ms = since_the_epoch.as_secs() * 1000 +
+            since_the_epoch.subsec_nanos() as u64 / 1_000_000;
+
+        println!("Time now is {:?}", in_ms);
         let context = get_context(vec![], false);
         testing_env!(context);
         let mut contract = Pools::new();
-        let win_options: Vector<String> = vec!["yes", "no"];
+        let win_options: Vec<String> = vec!["yes".to_string(), "no".to_string()];
         contract.make_new_pool("will it rain?".to_string(), 
         "Will we see rain today?".to_string(),win_options , 16358668940, 2, "Some Url".to_string());
         println!("Made  a new pool");
