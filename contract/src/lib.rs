@@ -1,9 +1,10 @@
 
 // To conserve gas, efficient serialization is achieved through Borsh (http://borsh.io/)
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::{env, near_bindgen, setup_alloc, Timestamp, AccountId, Balance};
+use near_sdk::{env, near_bindgen, setup_alloc, Timestamp, AccountId, Balance, Promise};
 use near_sdk::collections::{UnorderedMap, Vector};
 use std::time::{SystemTime, UNIX_EPOCH};
+
 
 setup_alloc!();
 
@@ -28,7 +29,8 @@ pub struct Pool {
     result: Option<String>,
     entries: Vector<Entry>,
     pool_fee: u8, // how much the pool owner wants to charge as a percentage. 
-    prize_pool: u128
+    prize_pool: u128,
+    win_option_bal: UnorderedMap<String, Balance>
 }
 
 #[near_bindgen]
@@ -36,6 +38,7 @@ pub struct Pool {
 pub struct Pools {
     owner: AccountId, 
     pools_list: UnorderedMap<AccountId, Vector<Pool>>,
+    pools_blocked: bool
 }
 
 impl Default for Pools {
@@ -53,12 +56,19 @@ impl Pools {
         assert!(!env::state_exists(), "Already initialized");
         Self {
             owner: env::signer_account_id(),
-            pools_list: UnorderedMap::new(b'e')
+            pools_list: UnorderedMap::new(b'e'),
+            pools_blocked: false
         }
     }
   
     pub fn make_new_pool(&mut self, question: String, desc: String, win_ops: Vec<String>, close: Timestamp, fee: u8, verify: String){
+        assert!(self.pools_blocked, "Pools blocked");
+        //make it so need 1 near to make pool, which also serves as the start value of the pool
         let id: String = self.pools_list.len().to_string();
+        let mut win_opt_bal:UnorderedMap<String,Balance> = UnorderedMap::new(b'l');
+        for o in win_ops.iter(){
+            win_opt_bal.insert(o, &0);
+        } 
         let pool = Pool {
             pool_id: id,
             pool_owner: env::signer_account_id(),
@@ -70,7 +80,8 @@ impl Pools {
             pool_fee: fee,
             result_verify_url: verify,
             result: None,
-            prize_pool: 0
+            prize_pool: 0,
+            win_option_bal: win_opt_bal
         };
         if self.pools_list.len() == 0 {
             //list is empty
@@ -115,6 +126,9 @@ impl Pools {
                 // add the entry to the pool 
                 p.entries.push(&entry);
                 p.prize_pool = p.prize_pool + amount;
+                let new_bal = p.win_option_bal.get(&entry.prediction);
+                assert!(new_bal.is_some(), "No Balance wtf");
+                p.win_option_bal.insert(&entry.prediction, &(new_bal.unwrap() + amount));
                 // return updated pool to the list of pools. 
                 self.pools_list.get(&owner).unwrap().replace(i, &p);
                 
@@ -142,6 +156,7 @@ impl Pools {
         }
 
     }
+    
     pub fn pay_out_winners(self, pool_id:String){
         let owner = env::signer_account_id();
         assert!(self.pools_list.get(&owner).is_some(), "You don't own any pools");
@@ -150,18 +165,47 @@ impl Pools {
         for p in the_pools.iter(){
             //find the pool 
             if p.pool_id == pool_id {
-                let winners:Vec<AccountId>;
                 //loop through entires to find matches 
                 assert!(p.result.is_some(), "NO result yet");
                 let r = p.result.unwrap();
                 for w in p.entries.iter(){
                     if w.prediction == r.clone(){
-                        
+                        //winner 
+                        //work out how much they get 
+                        let win_bal = p.win_option_bal.get(&w.prediction);
+                        let stake = w.stake;
+                        assert!(win_bal.is_some(), "No win balance??");
+                        let percent_due:f64 = (stake/win_bal.unwrap()) as f64;
+                        let plat_fee = (p.prize_pool /100) * 3; // remove 3% platform fee
+                        let owner_fee = (p.prize_pool /100) * (p.pool_fee) as u128; // remove the owner pool fee
+                        let payout_total = p.prize_pool - plat_fee - owner_fee;
+                        let winner_payout = payout_total as f64 * percent_due;
+                        Promise::new(w.bet_owner.to_string()).transfer(winner_payout as u128);
+                        //record as paid 
                     }
                 }
             }
             i = i + 1
         }
+    }
+    pub fn payout_fees(self, pool_id:String){
+        let owner = env::signer_account_id();
+        assert!(self.pools_list.get(&owner).is_some(), "You don't own any pools");
+    }
+
+    pub fn block_new_pool_creation(&mut self){
+        assert!(env::signer_account_id() == self.owner, "not the owner");
+        self.pools_blocked = true;
+    }
+    pub fn unblock_new_pool_creation(&mut self){
+        assert!(env::signer_account_id() == self.owner, "not the owner");
+        self.pools_blocked = false;
+    }
+    pub fn contract_balance(self, to_acc: AccountId){
+        assert!(env::signer_account_id() == self.owner, "not the owner");
+        assert!(self.pools_blocked, "Pools not blocked");
+        Promise::new(to_acc).transfer(env::account_balance());
+        //empty balance from contract assuming no pools running.
     }
 
 }
